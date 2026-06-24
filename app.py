@@ -135,7 +135,7 @@ CSS = """
 #ask-btn:hover { background: #c2410c; }
 """
 
-with gr.Blocks(title="RepairSafe") as demo:
+with gr.Blocks(title="RepairSafe", theme=THEME, css=CSS) as demo:
 
     gr.Markdown(
         """
@@ -212,4 +212,4 @@ distinctions — especially the "replacing existing" vs. "adding new" contrast.
             gr.Markdown(TIER_GUIDE_CONTENT)
 
 if __name__ == "__main__":
-    demo.launch(theme=THEME, css=CSS)
+    demo.launch()

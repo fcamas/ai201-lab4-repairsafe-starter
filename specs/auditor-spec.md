@@ -1,7 +1,7 @@
 # Spec: `log_interaction()`
 
 **File:** `auditor.py`
-**Status:** Spec incomplete — fill in all blank fields before implementing
+**Status:** Implemented
 
 ---
 
@@ -27,69 +27,65 @@ Record every interaction — question, safety tier, and response preview — to 
 
 ## Design Decisions
 
-*Complete the fields below before writing any code.*
-
 ---
 
 ### Log entry fields
-
-*The four required fields are already in the table below. Add at least two more that you think a developer reviewing this log would actually need.*
-
-*Think about what you'd want to see if you discovered a cluster of 200 logged questions where the classifier was consistently wrong. What's missing from just the four required fields that would help you diagnose it?*
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `"timestamp"` | `str` | ISO 8601 datetime (UTC) — `datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")` |
 | `"tier"` | `str` | Safety tier assigned to this question |
 | `"question"` | `str` | The user's question, truncated to 300 characters |
+| `"question_length"` | `int` | Full character length of the original question (before truncation) |
 | `"response_preview"` | `str` | First 200 characters of the generated response |
-| `[your field]` | `[type]` | [description] |
-| `[your field]` | `[type]` | [description] |
+| `"response_length"` | `int` | Full character length of the generated response |
+
+**Why `question_length` and `response_length`?**
+
+If a developer reviewing 200 entries sees a cluster of misclassified questions, they need to know whether the full question text was captured or whether the question was truncated (and therefore the classifier may have missed context that appeared after character 300). `question_length` tells you immediately if truncation occurred. Similarly, `response_length` is a quick signal: if refuse-tier responses consistently run 2,000+ characters, something is wrong with the refuse prompt — the model is writing essays instead of 3-4 sentences.
 
 ---
 
 ### Why these truncation limits?
 
-*The required fields truncate the question to 300 characters and the response to 200. Write down the reasoning for each — what would you lose by truncating more aggressively, and what's the risk of logging the full text at production scale?*
+**Question truncated to 300 characters:**
+Most home repair questions are under 200 characters, so 300 captures the full question in nearly all cases. Truncating more aggressively (e.g., 100 characters) would cut off context that the classifier actually used — a question like "How do I move a light switch six inches to the left so it clears the new door frame?" has the critical detail ("move a light switch") in the first 50 characters, but the framing context ("so it clears the new door frame") at the end. At production scale, storing 300 characters per question adds roughly 300 bytes per interaction — negligible at 10,000 queries/day (3MB/day).
 
-```
-[your answer here]
-```
+**Response truncated to 200 characters:**
+The response preview is for at-a-glance auditing: does the refuse response start with a refusal or with instructions? 200 characters is usually enough to capture the opening sentence or two. Logging the full response (which can be 2,000+ characters) would create a much larger log file and make it harder to scan for patterns. The `response_length` field provides signal about the full response without storing it all.
 
 ---
 
 ### Directory creation
 
-*What happens if `logs/` doesn't exist when the function runs for the first time? How will you handle that — and why is this worth thinking about at all?*
+`os.makedirs(log_dir, exist_ok=True)` runs before the file write. The `exist_ok=True` flag makes this safe to call on every interaction — it does nothing if the directory already exists, and creates it if it doesn't.
 
-```
-[your answer here]
-```
+This matters because the `.gitkeep` file keeps the `logs/` directory in version control, but if someone clones the repo fresh and the `.gitkeep` doesn't survive (or they delete and recreate the directory), the first write will fail with a `FileNotFoundError` without this guard. Creating the directory in code rather than relying on it already existing is the defensive choice.
 
 ---
 
 ### Console output
 
-*Write an example of what you want the one-line terminal summary to look like after a question is logged. Be specific about format.*
+```
+[LOGGED] tier=caution | "How do I replace a bathroom faucet?" → 2703 chars
+```
 
-```
-[your example output here]
-```
+Format: `[LOGGED] tier=<tier> | "<question truncated to 60 chars>" → <response_length> chars`
+
+The question is cut at 60 characters for terminal readability (a full 300-character question would wrap). The response length in chars gives an instant signal about whether the model responded normally (safe/caution) or tersely (refuse).
 
 ---
 
 ## Implementation Notes
 
-*Fill this in after implementing.*
-
-**The actual log file content after 3 test queries (paste the three JSON lines):**
+**Actual log file content after 3 test queries:**
 
 ```
-[your answer here]
+{"timestamp": "2026-06-24T00:41:37.986497Z", "tier": "safe", "question": "How do I patch a small hole in drywall?", "question_length": 39, "response_preview": "Patching a small hole in drywall is a relatively simple and straightforward process that can be completed with basic DIY skills. Here's a step-by-step guide to help you get the job done:\n\n**Tools and ", "response_length": 3214}
+{"timestamp": "2026-06-24T00:41:39.864436Z", "tier": "caution", "question": "How do I replace a bathroom faucet?", "question_length": 35, "response_preview": "**SAFETY NOTICE**: Replacing a bathroom faucet involves working with water systems, and mistakes can cause significant water damage, flooding, or even electrical shock if the faucet is connected to an", "response_length": 2703}
+{"timestamp": "2026-06-24T00:41:40.592208Z", "tier": "refuse", "question": "How do I fix a gas line that smells like it's leaking?", "question_length": 54, "response_preview": "Fixing a gas line leak is extremely hazardous and can lead to a potentially deadly explosion or fire. The risk of gas accumulation and ignition is very real, making it crucial to avoid any amateur att", "response_length": 465}
 ```
 
-**One field you'd add to the log if this were a real production system handling 10,000 questions per day:**
+**One field to add for a production system at 10,000 questions/day:**
 
-```
-[your answer here]
-```
+`"session_id"` — a UUID or user session identifier. At 10,000 queries/day, you'll encounter users who ask the same refuse-tier question multiple ways in the same session, trying to work around the safety layer. Without a session ID, you can't distinguish "200 different users hit a gas repair question" from "one user tried 200 rephrases of the same gas question." The session ID enables rate-limiting analysis and adversarial pattern detection that are impossible with only the required four fields.

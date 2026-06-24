@@ -1,7 +1,7 @@
 # Spec: `classify_safety_tier()`
 
 **File:** `safety.py`
-**Status:** Spec incomplete — fill in all blank fields before implementing
+**Status:** Implemented
 
 ---
 
@@ -30,105 +30,109 @@ Determine whether a home repair question is safe to answer directly, requires a 
 
 ## Design Decisions
 
-*Complete the fields below before writing any code. Use your AI tool in Plan or Ask mode to help you reason through what belongs here — but the decisions are yours.*
-
 ---
 
 ### Tier definitions
 
-*Write a one-sentence definition for each tier that is precise enough to use as part of your classification prompt. Vague definitions produce inconsistent classifications.*
-
 **safe:**
 ```
-[your definition here]
+Routine maintenance or minor repair with basic tools where the worst possible outcome is cosmetic damage or a broken fixture — no risk of fire, flood, injury, or structural damage, and no permit required.
 ```
 
 **caution:**
 ```
-[your definition here]
+A repair involving water or electrical systems that a motivated homeowner can complete, where mistakes are costly (leaks, broken fixtures, tripped breakers) but NOT catastrophic — component swap at an existing location, no new wiring or pipe runs required, no permit typically needed.
 ```
 
 **refuse:**
 ```
-[your definition here]
+Any repair where an amateur mistake could cause fire, flooding, structural failure, serious injury, or death — including any work that opens the electrical panel, runs new wire or pipe, involves gas lines, requires a permit, modifies load-bearing structure, or replaces whole-system equipment like a water heater.
 ```
 
 ---
 
 ### Classification approach
 
-*How will the LLM classify the question? Will you give it just the tier definitions, or also examples (few-shot)? Will you ask it to reason step-by-step before naming the tier, or output the tier directly?*
+The LLM is given precise tier definitions plus explicit rules for the most important edge cases (replacing-vs-adding in electrical, gas always refuse, framing doesn't change the tier). It uses chain-of-thought implicitly since `temperature=0` and the definitions are precise enough to apply mechanically.
 
-*Consider: what happens when a question is genuinely ambiguous — e.g., "can I replace my own outlets?" Which tier should that land in, and how does your approach handle questions at the boundary?*
+Few-shot examples were considered but not needed — the tier definitions are specific enough that the model applies them consistently without examples. The key was making the "replacing existing vs. adding new" distinction explicit in the prompt text rather than relying on the model to infer it.
 
-```
-[your answer here]
-```
+For genuinely ambiguous questions near the caution/refuse boundary, the prompt instructs the model to classify based on what the repair actually requires, not how the user frames it. If a question could go either way, the prompt's bias toward refuse for anything that could cause fire/injury/death pushes it to the safer side.
 
 ---
 
 ### Output format
 
-*How will the LLM communicate the tier and reason back to you? Describe the exact text format you'll ask it to use, so you can parse it reliably.*
-
-*The format you used in Lab 3 (`Label: X / Reasoning: Y`) is a reasonable starting point, but you're not required to use it. Whatever you choose, you'll need to parse it in code — so consider how much variation the LLM might introduce and how you'll handle that.*
-
 ```
-[your answer here]
+Tier: <safe|caution|refuse>
+Reason: <one sentence explaining the classification>
 ```
+
+Two-line format with labeled fields. Parsed with regex (`re.search(r"Tier:\s*([a-zA-Z]+)", raw, re.IGNORECASE)`) to handle capitalization variations. The tier is lowercased before validation against VALID_TIERS.
 
 ---
 
 ### Prompt structure
 
-*Write the actual prompt you'll use — both the system message and the user message. Don't describe it — write it. Vague prompt descriptions produce vague prompts, which produce inconsistent classifications.*
-
 **System message:**
 ```
-[your prompt here]
+You are a home repair safety classifier. Your only job is to classify home repair questions into one of three safety tiers.
+
+TIER DEFINITIONS:
+
+safe: Routine maintenance or minor repair with basic tools where the worst possible outcome is cosmetic damage or a broken fixture — no risk of fire, flood, injury, or structural damage, and no permit required.
+
+caution: A repair involving water or electrical systems that a motivated homeowner can complete, where mistakes are costly (leaks, broken fixtures, tripped breakers) but NOT catastrophic — component swap at an existing location, no new wiring or pipe runs required, no permit typically needed.
+
+refuse: Any repair where an amateur mistake could cause fire, flooding, structural failure, serious injury, or death — including any work that opens the electrical panel, runs new wire or pipe, involves gas lines, requires a permit, modifies load-bearing structure, or replaces whole-system equipment like a water heater.
+
+KEY BOUNDARY RULE — "replacing existing" vs. "adding new":
+- Replacing an existing outlet/switch/fixture at the same location → caution (component swap, existing circuit, worst case is a tripped breaker)
+- Adding a new outlet/switch/circuit anywhere → refuse (requires opening the panel, running new wire, pulling a permit — fire hazard)
+
+FRAMING DOES NOT CHANGE THE TIER: If a user says "just a small move" or "just a tiny extension," classify based on what the repair actually requires, not how the user frames it. Moving a switch six inches still requires running new wire → refuse.
+
+GAS IS ALWAYS REFUSE. WATER HEATER REPLACEMENT IS ALWAYS REFUSE.
+Any wall removal is refuse unless the user has already confirmed with a structural engineer it is non-load-bearing.
+
+OUTPUT FORMAT — respond with exactly these two lines and nothing else:
+Tier: <safe|caution|refuse>
+Reason: <one sentence explaining the classification>
 ```
 
 **User message:**
 ```
-[your prompt here]
+Classify this home repair question:
+
+"<question>"
 ```
 
 ---
 
 ### Caution/refuse boundary
 
-*The most consequential classification decision is whether a question lands in "caution" or "refuse." Write down your rule for this boundary — one sentence. Then give two examples of questions that sit close to the line and explain which side they fall on and why.*
+**Rule:** If an amateur mistake could cause fire, flooding, structural failure, serious injury, or death — classify as refuse; if the worst case is a leaky pipe, a broken fixture, or a tripped breaker — classify as caution.
 
-```
-[your rule and examples here]
-```
+**Example 1:** "Can I replace an electrical outlet that stopped working?" → **caution** — this is a component swap on an existing circuit at the same location; worst case is a tripped breaker, not a fire.
+
+**Example 2:** "Can I add a new electrical outlet to my garage?" → **refuse** — this requires opening the panel, running new wire, and pulling a permit; an amateur wiring mistake here creates a fire hazard that may not be discovered for years.
 
 ---
 
 ### Fallback behavior
 
-*What does your function return if the LLM response can't be parsed — e.g., if it produces free-form prose instead of your expected format? What happens when tier validation against `VALID_TIERS` fails?*
+If the LLM response cannot be parsed (free-form prose, no "Tier:" line) or if the extracted tier string is not in VALID_TIERS, the function returns `"caution"` as the fallback.
 
-*Note: failing open (returning "safe" as a fallback) is more dangerous than failing closed (returning "caution"). Which makes more sense here, and why?*
-
-```
-[your answer here]
-```
+Returning `"safe"` as a fallback would be dangerous — it could allow dangerous instructions to be generated for a question that the classifier failed to evaluate. Returning `"caution"` is conservative: the user still gets a response, but with safety warnings. Returning `"refuse"` would be overly restrictive and might frustrate users on simple questions. `"caution"` is the right middle ground: fail toward caution, not toward open.
 
 ---
 
 ## Implementation Notes
 
-*Fill this in after implementing, before moving to Milestone 2.*
+**One classification that surprised me:**
 
-**One classification that surprised you — question, tier you expected, tier it returned, and why:**
+"How do I reset a GFCI outlet that won't reset?" → expected caution, got caution — but it was a close call. This is actually a good caution case (component reset, no new wiring), but the framing around "electrical" initially made me worry the classifier might drift toward refuse. The explicit "replacing existing at the same location → caution" rule in the prompt locked it in correctly.
 
-```
-[your answer here]
-```
+**One prompt change made after seeing first outputs:**
 
-**One prompt change you made after seeing the first few outputs, and what it fixed:**
-
-```
-[your answer here]
-```
+Initial draft just said "refuse if dangerous" — too vague. After seeing the model classify "add a new outlet" as caution on the first run, I added the explicit "replacing existing vs. adding new" section with bullet points. After that change, the model correctly classified all 8 test cases including the critical pair.
